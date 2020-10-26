@@ -38,7 +38,7 @@ export class Block {
       join: {
         alias: "block",
         innerJoinAndSelect: {
-            chain: "block.chain",
+          chain: "block.chain",
         }
       },
       where: { hash: blockHash }
@@ -130,6 +130,7 @@ export class Block {
 
     const currentBlock = await getRepository(mBlock).findOne({
       select: ["height"],
+      where: { chain: 1 },
       order: { height: 'DESC' }
     })
       .catch(error => {
@@ -146,7 +147,78 @@ export class Block {
           await getManager().transaction(async dbTransaction => {
             await Chain.selectMain(dbTransaction)
               .then(async (chain: mChain) => {
-                await this.addFromHash(dbTransaction, rpcClient, blockHash, chain);
+                // Search if a block exist with this hash
+                const dbBlock = await Block.select(dbTransaction, blockHash)
+                  .catch(error => {
+                    return Promise.reject(error);
+                  });
+
+                // In case it was mistaken set as valid-headers
+                if (dbBlock !== undefined) {
+                  await Block.updateChain(dbTransaction, dbBlock, chain)
+                    .catch(error => {
+                      return Promise.reject(error);
+                    });
+                  await Chain.delete(dbTransaction, dbBlock.chain)
+                    .catch(error => {
+                      return Promise.reject(error);
+                    });
+
+                  // Update the addresses information
+                  await Transaction.select(dbTransaction, dbBlock.hash)
+                  .then(async (transactions: mTransaction[]) => {
+                    // Loop for each transaction
+                    for (const transaction of transactions) {
+                      if (transaction.vins !== undefined) {
+                        // Loop for each VIN
+                        for (const vin of transaction.vins) {
+                          if (vin.coinbase === false && vin.vout !== undefined) {
+                            const addressDetails: AddressDetails = {
+                              type: UpdateType.ADDITION,
+                              inputC: 0,
+                              inputT: new BigNumber(0),
+                              outputC: 1,
+                              outputT: new BigNumber(vin.vout.value)
+                            }
+                            await Address.update(dbTransaction, vin.vout.addresses![0], addressDetails)
+                              .catch(error => {
+                                return Promise.reject(error);
+                              });
+                          }
+                        }
+                      }
+
+                      if (transaction.vouts !== undefined) {
+                        // Loop for each VOUT
+                        for (const vout of transaction.vouts) {
+                          const addressDetails: AddressDetails = {
+                            type: UpdateType.ADDITION,
+                            inputC: 1,
+                            inputT: new BigNumber(vout.value),
+                            outputC: 0,
+                            outputT: new BigNumber(0),
+                          }
+                          if (vout.addresses !== undefined) {
+                            await Address.update(dbTransaction, vout.addresses[0], addressDetails)
+                              .catch(error => {
+                                return Promise.reject(error);
+                              });
+                          }
+                        }
+                      }
+                    }
+                  })
+                  .catch(error => {
+                    return Promise.reject(error);
+                  });
+                }
+                // Normal process
+                else {
+                  await this.addFromHash(dbTransaction, rpcClient, blockHash, chain)
+                    .catch(error => {
+                      return Promise.reject(error);
+                    });
+                }
               })
           });
         })
@@ -245,7 +317,7 @@ export class Block {
                   // Update transation and block variables for output
                   tInputC = tInputC.plus(1);
                   tInputT = voutVin === undefined ? new BigNumber(0) : tInputT.plus(new BigNumber(voutVin.value));
-                };
+                }
                 blockInputC = blockInputC.plus(tInputC);
                 blockInputT = blockInputT.plus(tInputT);
 

@@ -3,7 +3,7 @@ Global Blockchain Explorer
 
 An open source RPC Blockchain Explorer using Typescript and TypeORM.
 
-[![DeepScan grade](https://deepscan.io/api/teams/10460/projects/13319/branches/220035/badge/grade.svg)](https://deepscan.io/dashboard#view=project&tid=10460&pid=13319&bid=220035)
+[![DeepScan grade](https://deepscan.io/api/teams/10460/projects/13319/branches/220035/badge/grade.svg)](https://deepscan.io/dashboard#view=project&tid=10460&pid=13319&bid=220035) [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Calvario_gbc-explorer&metric=alert_status)](https://sonarcloud.io/dashboard?id=Calvario_gbc-explorer) [![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=Calvario_gbc-explorer&metric=sqale_rating)](https://sonarcloud.io/dashboard?id=Calvario_gbc-explorer) [![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=Calvario_gbc-explorer&metric=reliability_rating)](https://sonarcloud.io/dashboard?id=Calvario_gbc-explorer) [![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=Calvario_gbc-explorer&metric=security_rating)](https://sonarcloud.io/dashboard?id=Calvario_gbc-explorer)
 
 ### Live sites
 
@@ -30,7 +30,7 @@ An open source RPC Blockchain Explorer using Typescript and TypeORM.
 ### Install node modules
 
     cd gbc-explorer
-    npm run bootstrap
+    npm install
     npm run build
 
 ### Configure
@@ -63,3 +63,17 @@ Configuration example
     rpcbind=127.0.0.1
     rpcuser=user
     rpcpassword=password
+
+## Copying
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+
+See LICENSE.txt for a copy of the GNU General Public License, or visit
+<https://www.gnu.org/licenses/>.
