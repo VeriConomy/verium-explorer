@@ -22,37 +22,32 @@ import { getRepository } from "typeorm";
 import iController from '../interfaces/iController';
 import stringValidator from '../middlewares/mStringValidator';
 import mCache from '../middlewares/mCache';
-import { mPeerVersion } from '@calvario/gbc-explorer-shared';
+import { mChain } from '@calvario/gbc-explorer-shared';
 import debug from 'debug';
 
 
-class Peer implements iController {
-  public path = '/rest/api/1/peer';
+class Chain implements iController {
+  public path = '/rest/api/1/chain';
   public router = Router();
-  private repository = getRepository(mPeerVersion);
+  private repository = getRepository(mChain);
 
   constructor() {
     this.initializeRoutes();
   }
 
   private initializeRoutes() {
-    this.router.get(`${this.path}`, mCache(10), this.getNetworkSummary);
-    this.router.get(`${this.path}/:version`, stringValidator(), this.getNetworkListForVersion);
+    this.router.get(`${this.path}`, mCache(10), this.getChainList);
+    this.router.get(`${this.path}/:id`, stringValidator(), this.getChainBlocks);
   }
 
-  private getNetworkSummary = async (request: Request, response: Response) => {
-    const qB = this.repository.createQueryBuilder("version")
-      .select('version.id', 'version_id')
-      .addSelect('version.version', 'version_version')
-      .addSelect('version.subVersion', 'version_subVersion')
-      .addSelect('COUNT(peer.id)', 'version_count')
-      .innerJoin('version.peers', 'peer')
-      .where('peer.lastSeen >= (NOW() - interval \'24 hour\')')
-      .groupBy('version.id, version.version, version.subVersion')
-      .orderBy('version_count', 'DESC')
-    await qB.getRawMany()
-      .then(networkSummary => {
-        return response.json(networkSummary);
+  private getChainList = async (request: Request, response: Response) => {
+    const qB = this.repository.createQueryBuilder('chain')
+      .innerJoinAndSelect('chain.status', 'chainStatus')
+      .where('chainStatus.name != \'active\'')
+      .orderBy('chain.height', 'DESC')
+    await qB.getMany()
+      .then(chainList => {
+        return response.json(chainList);
       })
       .catch((error) => {
         debug.log(error);
@@ -60,13 +55,13 @@ class Peer implements iController {
       });
   }
 
-  private getNetworkListForVersion = async (request: Request, response: Response) => {
-    const version = request.params.version;
-    await this.repository.createQueryBuilder("version")
-      .innerJoinAndSelect('version.peers', 'peer')
-      .where("version.id = :id", { id: version })
-      .andWhere('peer.lastSeen >= (NOW() - interval \'24 hour\')')
-      .getOne()
+  private getChainBlocks = async (request: Request, response: Response) => {
+    const dbId = request.params.id;
+    await this.repository.createQueryBuilder('chain')
+      .innerJoinAndSelect('chain.blocks', 'block')
+      .where("chain.id = :id", { id: dbId })
+      .orderBy('block.height', 'DESC')
+      .getMany()
       .then(block => {
         return response.json(block);
       })
@@ -77,4 +72,4 @@ class Peer implements iController {
   }
 }
 
-export default Peer;
+export default Chain;
