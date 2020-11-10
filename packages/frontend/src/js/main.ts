@@ -459,6 +459,61 @@ function homeRichListAddressLink(value: string, row: any) {
   return addOverflowControl(link);
 }
 
+function homeCalculator(params: any) {
+  $.ajax({
+    type: 'GET',
+    url: '/rest/api/1/rpc/getmininginfo',
+    success: (getmininginfo) => {
+      $.ajax({
+        type: 'GET',
+        url: '/rest/api/1/coingecko/price',
+        success: (price) => {
+          const data: any[] = [];
+          const timeList: any = { Day: 24, Week: 168, Month: 720 };
+          // Calcul
+          const coinsPerHour = Number(getmininginfo.blocksperhour) * Number(getmininginfo.blockreward);
+          const ageOfNetworkHashrate = Number($('#homeCalculatorHash').val()) / (Number(getmininginfo['nethashrate (kH/m)']) * 1000) * 100;
+          const minedPerHour = coinsPerHour * ageOfNetworkHashrate / 100;
+          let monthProfit = 0;
+
+          for (const timeId of Object.keys(timeList)) {
+            const mined = minedPerHour * timeList[timeId];
+            const cost = Number($('#homeCalculatorPower').val()) / 1000 * Number($('#homeCalculatorKWh').val()) * timeList[timeId];
+            const income = mined * price[COINGECKO_SYMBOL].usd;
+            // Keep it for ROI
+            if (timeId === 'Month') {
+              monthProfit = income - cost;
+            }
+            const row = {
+              'time': timeId,
+              'mined': mined,
+              'poolfee': mined / 100 * Number($('#homeCalculatorFee').val()),
+              'cost': cost,
+              'income': income ,
+              'profit': income - cost,
+            }
+            data.push(row);
+          }
+          const DaysForBlock = 0.694 * (Number(getmininginfo['nethashrate (kH/m)'] * 1000) * (Number(getmininginfo.blocksperhour) / 60)) / Number($('#homeCalculatorHash').val()) / 24;
+          $('#homeCalculatorDaysForBlock').val(formatNumber(DaysForBlock, 2));
+          const roiResult = isNaN(Number($('#homeCalculatorCost').val()) / monthProfit) ? 0 : Number($('#homeCalculatorCost').val()) / monthProfit;
+          $('#homeCalculatorROI').val(roiResult >= 0 ? formatNumber(roiResult, 2) : 'Unprofitable ');
+          params.success({
+            'rows': data,
+            'total': data.length
+          })
+        },
+        error: (err) => {
+          params.error(err);
+        }
+      });
+    },
+    error: (err) => {
+      params.error(err);
+    }
+  });
+}
+
 function homeMarket(params: any) {
   $.ajax({
     type: 'GET',
@@ -1124,6 +1179,10 @@ $(() => {
       });
       $('.navbar-burger').removeClass('is-active');
       $('.navbar-menu').removeClass('is-active');
+    });
+
+    $('#homeCalculatorRefresh').on('click', () => {
+      ($('#homeCalculatorResult') as any).bootstrapTable('refresh');
     });
 
     // Push TX
