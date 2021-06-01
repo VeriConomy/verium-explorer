@@ -34,7 +34,7 @@ BigNumber.config({ DECIMAL_PLACES: 9 })
 export class Block {
 
   static async select(dbTransaction: EntityManager, blockHash: string): Promise<mBlock | undefined> {
-    return await dbTransaction.findOne(mBlock, {
+    return dbTransaction.findOne(mBlock, {
       join: {
         alias: "block",
         innerJoinAndSelect: {
@@ -42,6 +42,21 @@ export class Block {
         }
       },
       where: { hash: blockHash }
+    })
+      .catch(error => {
+        return Promise.reject(error);
+      });
+  }
+
+  static async selectHeightMain(dbTransaction: EntityManager, blockHeight: number): Promise<mBlock | undefined> {
+    return dbTransaction.findOne(mBlock, {
+      join: {
+        alias: "block",
+        innerJoinAndSelect: {
+          chain: "block.chain",
+        }
+      },
+      where: { height: blockHeight, chain: 1 } // HARDCODED MAIN CHAIN ID
     })
       .catch(error => {
         return Promise.reject(error);
@@ -82,14 +97,14 @@ export class Block {
     };
 
     const newBlock = dbTransaction.create(mBlock, blockData);
-    return await dbTransaction.save(newBlock)
+    return dbTransaction.save(newBlock)
       .catch(error => {
         return Promise.reject(error);
       });
   }
 
   static async update(dbTransaction: EntityManager, blockObj: mBlock, updatedBlock: UpdatedBlock): Promise<UpdateResult> {
-    return await dbTransaction.update(mBlock, blockObj.id!, {
+    return dbTransaction.update(mBlock, blockObj.id!, {
       inputC: updatedBlock.bInputC,
       inputT: updatedBlock.bInputT.toNumber(),
       outputC: updatedBlock.bOutputC,
@@ -109,14 +124,14 @@ export class Block {
         return Promise.reject(error);
       })
 
-    return await dbTransaction.update(mBlock, previousBlockObj.id!, { nextblockhash: blockObj.hash })
+    return dbTransaction.update(mBlock, previousBlockObj.id!, { nextblockhash: blockObj.hash })
       .catch(error => {
         return Promise.reject(error);
       });
   }
 
   static async updateChain(dbTransaction: EntityManager, blockObj: mBlock, chainObj: mChain): Promise<UpdateResult> {
-    return await dbTransaction.update(mBlock, blockObj.id!, { chain: chainObj })
+    return dbTransaction.update(mBlock, blockObj.id!, { chain: chainObj })
       .catch(error => {
         return Promise.reject(error);
       });
@@ -139,6 +154,46 @@ export class Block {
 
     let counter: number = currentBlock === undefined ? 1 : currentBlock.height + 1;
 
+    // Check if we got a rollback on the chain
+    let safeBlockHeight: number = counter - Number(process.env.COIN_CONFIRMATIONS) - 2;
+    safeBlockHeight = safeBlockHeight < 0 ? 1 : safeBlockHeight; // Fail-safe for early sync
+
+    while (safeBlockHeight < counter) {
+      debug.log('-- START CHECK Heigh: ' + safeBlockHeight);
+      await rpcClient.getblockhash({ height: safeBlockHeight })
+        .then(async (blockHash: string) => {
+          // Create a big transaction
+          await getManager().transaction(async dbTransaction => {
+            // Search the block with this height
+            const dbBlock = await Block.selectHeightMain(dbTransaction, safeBlockHeight)
+              .catch(error => {
+                return Promise.reject(error);
+              });
+
+            if (dbBlock != undefined) {
+              if (dbBlock.hash != blockHash) {
+                await Block.resyncToMainChain(dbTransaction, rpcClient, safeBlockHeight, blockHash, dbBlock, undefined)
+                  .catch(error => {
+                    return Promise.reject(error);
+                  });
+              }
+            } else {
+              // Should be impossible, only on a highly corruption situation
+              return Promise.reject('The database is missing blocks behind the current block, please fully resync');
+            }
+          });
+        })
+        .then(() => {
+          debug.log('-- END CHECK Heigh: ' + safeBlockHeight);
+          // Jump to the next block
+          safeBlockHeight++
+        })
+        .catch(error => {
+          return Promise.reject(error);
+        });
+    }
+
+    // Process new blocks
     while (counter <= lastBlock) {
       debug.log('-- START Heigh: ' + counter);
       await rpcClient.getblockhash({ height: counter })
@@ -378,6 +433,57 @@ export class Block {
       .catch(error => {
         return Promise.reject(error);
       })
+  }
+  static async resyncToMainChain(dbTransaction: EntityManager, rpc: RPCClient, blockHeight: number, mainBlockHash: string, sideBlockObj: mBlock, sideChainObj: mChain | undefined) {
+    // Move the side block to the the new side chain
+    if (sideChainObj === undefined) {
+      sideChainObj = await Chain.createUnknown(dbTransaction, sideBlockObj.height, sideBlockObj.hash);
+    }
+
+    debug.log("Height : " + blockHeight + " - Side chain block detected (" + sideBlockObj.hash + ")");
+
+    await Block.updateChain(dbTransaction, sideBlockObj, sideChainObj)
+      .catch(error => {
+        return Promise.reject(error);
+      })
+
+    await Address.updateForBlock(dbTransaction, sideBlockObj, false)
+      .catch(error => {
+        return Promise.reject(error);
+      });
+
+    // Try to find the main chain block hash on the database
+    const mainBlockObj = await Block.select(dbTransaction, mainBlockHash)
+      .catch(error => {
+        return Promise.reject(error);
+      });
+
+    // We have the main chain block
+    if (mainBlockObj != undefined) {
+      debug.log('Moving block to main chain: ' + mainBlockHash);
+      await Chain.selectMain(dbTransaction)
+        .then(async (mainChainObj: mChain) => {
+          await Block.updateChain(dbTransaction, mainBlockObj, mainChainObj)
+            .catch(error => {
+              return Promise.reject(error);
+            });
+          await Address.updateForBlock(dbTransaction, mainBlockObj, true)
+            .catch(error => {
+              return Promise.reject(error);
+            });
+        });
+    }
+    // If we don't have the main chain block on the database
+    else {
+      debug.log('Inserting block of main chain: ' + mainBlockHash);
+      await Chain.selectMain(dbTransaction)
+        .then(async (mainChainObj: mChain) => {
+          return Block.addFromHash(dbTransaction, rpc, mainBlockHash, mainChainObj)
+        })
+        .catch(error => {
+          return Promise.reject(error);
+        });
+    }
   }
 }
 

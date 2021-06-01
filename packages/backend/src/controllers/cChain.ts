@@ -20,18 +20,17 @@
 import debug from "debug";
 import BigNumber from "bignumber.js"
 import { RPCClient } from "rpc-bitcoin";
-import { getManager, EntityManager } from "typeorm";
-import { mBlock, mChain, mChainStatus, mTransaction } from '@calvario/gbc-explorer-shared';
+import { getManager, EntityManager, Not } from "typeorm";
+import { mChain, mChainStatus } from '@calvario/gbc-explorer-shared';
 import { ChainStatus } from "./cChainStatus";
 import { Block } from "./cBlock";
-import { Transaction } from "./cTransaction";
-import { Address, AddressDetails, UpdateType } from "./cAddress";
+import { Address } from "./cAddress";
 
 BigNumber.config({ DECIMAL_PLACES: 9 })
 
 export class Chain {
   static async select(dbTransaction: EntityManager, chainHash: string): Promise<mChain | undefined> {
-    return await dbTransaction.findOne(mChain, {
+    return dbTransaction.findOne(mChain, {
       where: { hash: chainHash }
     })
       .catch((error) => {
@@ -39,25 +38,9 @@ export class Chain {
       });
   }
 
-  static async selectVanished(dbTransaction: EntityManager): Promise<mChain[] | undefined> {
-    return await dbTransaction.find(mChain, {
-      join: {
-        alias: "chain",
-        leftJoinAndSelect: {
-          block: "chain.blocks",
-        }
-      },
-      where: { available: false, unknown: false},
-      order: { "height": "DESC" }
-    })
-      .catch((error) => {
-        return Promise.reject(error);
-      });
-  }
-
   static async selectMain(dbTransaction: EntityManager): Promise<mChain> {
-    return await dbTransaction.findOne(mChain, {
-      where: { id: 1 }
+    return dbTransaction.findOne(mChain, {
+      where: { id: 1 } // HARDCODED MAIN CHAIN ID
     })
       .then(async (chainObj: mChain | undefined) => {
         // We create a dummy main chain for the first sync
@@ -71,7 +54,7 @@ export class Chain {
             hash: '',
             branchlen: 0,
           };
-          return await this.create(dbTransaction, chainInfo, chainStatusObj)
+          return this.create(dbTransaction, chainInfo, chainStatusObj)
             .catch((error) => {
               return Promise.reject(error);
             });
@@ -84,68 +67,73 @@ export class Chain {
       });
   }
 
+  static async selectAll(dbTransaction: EntityManager): Promise<mChain[]> {
+    return dbTransaction.find(mChain, {
+      join: {
+        alias: "chain",
+        innerJoinAndSelect: {
+          ChainStatus: "chain.status",
+        }
+      },
+      where: { id: Not(1) } // HARDCODED MAIN CHAIN ID
+    })
+      .catch((error) => {
+        return Promise.reject(error);
+      });
+  }
+
   static async create(dbTransaction: EntityManager, chainInfo: any, chainStatus: mChainStatus): Promise<mChain> {
     const chainData: mChain = {
       height: chainInfo.height,
       hash: chainInfo.hash,
       branchlen: chainInfo.branchlen,
       status: chainStatus,
-      available: true,
-      unknown: false,
     };
 
     const newChain = dbTransaction.create(mChain, chainData);
-    return await dbTransaction.save(newChain)
+    return dbTransaction.save(newChain)
+      .catch((error) => {
+        return Promise.reject(error);
+      });
+  }
+
+  static async createUnknown(dbTransaction: EntityManager, height: number, hash: string): Promise<mChain> {
+    const chainStatusObj: mChainStatus = await ChainStatus.select(dbTransaction, 'Unknown')
+      .catch((error) => {
+        return Promise.reject(error);
+      });
+
+    const chainData: mChain = {
+      height: height,
+      hash: hash,
+      branchlen: 1,
+      status: chainStatusObj,
+    };
+
+    const newChain = dbTransaction.create(mChain, chainData);
+    return dbTransaction.save(newChain)
       .catch((error) => {
         return Promise.reject(error);
       });
   }
 
   static async update(dbTransaction: EntityManager, dbChain: mChain, chainInfo: any, chainStatus: mChainStatus): Promise<boolean> {
-    return await dbTransaction.update(mChain, dbChain.id!, {
+    return dbTransaction.update(mChain, dbChain.id!, {
       height: chainInfo.height,
       hash: chainInfo.hash,
       branchlen: chainInfo.branchlen,
       status: chainStatus,
-      available: true,
-      unknown: false,
     })
       .then(() => {
         return true;
       })
       .catch((error: any) => {
-        return Promise.reject(error);
-      });
-  }
-
-  static async updateToUnknown(dbTransaction: EntityManager, dbChain: mChain): Promise<boolean> {
-    return await dbTransaction.update(mChain, dbChain.id!, {
-      unknown: true,
-    })
-      .then(() => {
-        return true;
-      })
-      .catch((error: any) => {
-        return Promise.reject(error);
-      });
-  }
-
-  static async updateAllToUnavailable(dbTransaction: EntityManager): Promise<boolean> {
-    return await dbTransaction.createQueryBuilder()
-      .update(mChain)
-      .set({ available: false })
-      .where('available = true')
-      .execute()
-      .then(() => {
-        return true;
-      })
-      .catch(error => {
         return Promise.reject(error);
       });
   }
 
   static async delete(dbTransaction: EntityManager, dbChain: mChain): Promise<boolean> {
-    return await dbTransaction.delete(mChain, dbChain.id!)
+    return dbTransaction.delete(mChain, dbChain.id!)
       .then(() => {
         return true;
       })
@@ -164,50 +152,47 @@ export class Chain {
     // Create a big transaction
     await getManager().transaction(async dbTransaction => {
 
-      // Start fresh to find removed
-      await this.updateAllToUnavailable(dbTransaction)
+      // Get the main chain
+      let mainChainObj = await this.selectMain(dbTransaction)
         .catch(error => {
           return Promise.reject(error);
         });
 
-      // Loop on each chain
-      for (const chain of chainTips) {
+      // Update the main chain
+      const activeChainTip = chainTips.find((chainTip: any) => chainTip.status === 'active');
+      this.update(dbTransaction, mainChainObj, activeChainTip, mainChainObj.status)
+        .then(async () =>
+          mainChainObj = await this.selectMain(dbTransaction)
+        )
+        .catch(error => {
+          return Promise.reject(error);
+        });
 
-        // Search the chain status
-        const chainStatus = await ChainStatus.select(dbTransaction, chain.status)
-          .catch(error => {
-            return Promise.reject(error);
-          });
+      // Get all the chains in the DB
+      let dbChains = await this.selectAll(dbTransaction)
+        .catch(error => {
+          return Promise.reject(error);
+        });
 
-        // Update active chain information
-        if (chain.status === 'active' && chain.branchlen === 0) {
-          await this.selectMain(dbTransaction)
-            .then((chainObj: mChain) => {
-              this.update(dbTransaction, chainObj, chain, chainStatus)
-            })
-            .catch(error => {
-              return Promise.reject(error);
-            });
-        }
-        // Side chain management
-        else {
-          // Search the chain hash on the database
-          await this.select(dbTransaction, chain.hash)
-            .then(async (chainObj: mChain | undefined) => {
-              // Chain was found
-              if (chainObj !== undefined) {
-                this.update(dbTransaction, chainObj, chain, chainStatus)
-                return chainObj;
-              }
-              // Chain hash not found but lenght of 1
-              else if (chain.branchlen === 1) {
-                return await this.create(dbTransaction, chain, chainStatus);
-              }
-              // Search until we find the associated chain
-              else if (chain.status === 'valid-fork' || chain.status === 'valid-headers') {
+      // Get the missing chain tips
+      const missingChainTips = chainTips.filter((chainTip: any) =>
+        !dbChains.some(dbChain => (
+          chainTip.hash === dbChain.hash ||
+          chainTip.status === 'active'
+        ))
+      );
+
+      if (missingChainTips.lenght >= 1) {
+        // Loop on each chain
+        for (const missingChainTip of missingChainTips) {
+
+          // Search the chain status
+          await ChainStatus.select(dbTransaction, missingChainTip.status)
+            .then(async (chainStatus: mChainStatus) => {
+              if (missingChainTip.branchlen > 1 && (missingChainTip.status === 'valid-fork' || missingChainTip.status === 'valid-headers')) {
                 let searchChainObj: mChain | undefined;
-                let searchHash = chain.hash;
-                for (let i = 0; i < chain.branchlen; i++) {
+                let searchHash = missingChainTip.hash;
+                for (let i = 0; i < missingChainTip.branchlen; i++) {
                   const loopChainObj = await this.select(dbTransaction, searchHash);
                   if (loopChainObj === undefined) {
                     const blockObj = await rpcClient.getblock({
@@ -220,93 +205,137 @@ export class Chain {
                     break;
                   }
                 }
+
                 // No match, we insert it
                 if (searchChainObj === undefined) {
-                  return await this.create(dbTransaction, chain, chainStatus);
+                  return this.create(dbTransaction, missingChainTip, chainStatus);
                 }
-                // We find it and update it
+                // We found it and update it
                 else {
-                  await this.update(dbTransaction, searchChainObj, chain, chainStatus)
+                  await this.update(dbTransaction, searchChainObj, missingChainTip, chainStatus)
                   return searchChainObj;
                 }
               }
-              // It's a dummy chain
               else {
-                return await this.create(dbTransaction, chain, chainStatus);
+                return this.create(dbTransaction, missingChainTip, chainStatus);
               }
             })
             .then(async (chainObj: mChain) => {
-              return await manageSideChain(dbTransaction, rpcClient, chain, chainObj)
+              return manageSideChain(dbTransaction, rpcClient, missingChainTip, chainObj)
+            })
+            .catch(error => {
+              return Promise.reject(error);
+            });
+        }
+
+        // Renewed get of all the chains in the DB
+        dbChains = await this.selectAll(dbTransaction)
+          .catch(error => {
+            return Promise.reject(error);
+          });
+      }
+
+      // Get the removed chain tips
+      const removedChains = dbChains.filter(dbChain =>
+        !chainTips.some((chainTip: any) => (
+          chainTip.hash === dbChain.hash
+        ))
+      );
+
+      // Manage the removed chain tips
+      if (removedChains.length >= 1) {
+        // Loop on each chain
+        for (const removedChain of removedChains) {
+          let toRemove = true;
+          if (removedChain.blocks !== undefined) {
+            // Loop on each block of the chain
+            for (const dbBlock of removedChain.blocks) {
+              const mainHash = await rpcClient.getblockhash({
+                height: dbBlock.height
+              })
+                .catch(error => {
+                  return Promise.reject(error);
+                });
+
+              if (mainHash === dbBlock.hash) {
+                debug.log('Moving block to main chain: ' + dbBlock.hash);
+                await Block.updateChain(dbTransaction, dbBlock, mainChainObj)
+                  .catch(error => {
+                    return Promise.reject(error);
+                  });
+                await Address.updateForBlock(dbTransaction, dbBlock, true)
+                  .catch(error => {
+                    return Promise.reject(error);
+                  });
+              }
+              // Side chain chaos situation
+              else {
+                return Promise.reject('Unknow chain detected: ' + removedChain.hash);
+              }
+            }
+          }
+
+          // We only remove the chain that we fully migrated
+          if (toRemove === true) {
+            debug.log('Removing migrated chain: ' + removedChain.hash);
+            await Chain.delete(dbTransaction, removedChain)
+              .catch(error => {
+                return Promise.reject(error);
+              });
+          }
+        }
+
+        // Renewed get of all the chains in the DB
+        dbChains = await this.selectAll(dbTransaction)
+          .catch(error => {
+            return Promise.reject(error);
+          });
+      }
+
+      // Get the changed chain tips (Not sure if possible)
+      const changedChainTips = chainTips.filter((chainTip: any) =>
+        dbChains.some(dbChain => (
+          chainTip.hash === dbChain.hash &&
+          (
+            chainTip.status != dbChain.status.name ||
+            chainTip.branchlen != dbChain.branchlen ||
+            chainTip.height != dbChain.height
+          )
+        ))
+      );
+
+      // Manage the changed chain tips
+      if (changedChainTips.length >= 1) {
+        // Loop on each chain
+        for (const chainTip of changedChainTips) {
+          // Search the chain status
+          const chainStatus = await ChainStatus.select(dbTransaction, chainTip.status)
+            .catch(error => {
+              return Promise.reject(error);
+            });
+
+          // Search the chain hash on the database
+          await this.select(dbTransaction, chainTip.hash)
+            .then(async (chainObj: mChain | undefined) => {
+              if (chainObj != undefined) {
+                // Update the chain
+                this.update(dbTransaction, chainObj, chainTip, chainStatus)
+                  .catch(error => {
+                    return Promise.reject(error);
+                  });
+              }
+
             })
             .catch(error => {
               return Promise.reject(error);
             });
         }
       }
-
-      // Get the list of all chains that disappeared from the export
-      await this.selectVanished(dbTransaction)
-        .then(async (chainsListObj: mChain[] | undefined) => {
-          // If we have some chains to manage
-          if (chainsListObj !== undefined) {
-            // Get the main chain
-            const mainChainObj = await this.selectMain(dbTransaction)
-              .catch(error => {
-                return Promise.reject(error);
-              });
-
-            // Loop on each chain
-            for (const chainObj of chainsListObj) {
-              let toRemove = true;
-              if (chainObj.blocks !== undefined) {
-                // Loop on each block of the chain
-                for (const dbBlock of chainObj.blocks) {
-                  const mainHash = await rpcClient.getblockhash({
-                    height: dbBlock.height
-                  })
-                    .catch(error => {
-                      return Promise.reject(error);
-                    });
-
-                  if (mainHash === dbBlock.hash) {
-                    debug.log('Moving block to main chain: ' + dbBlock.hash);
-                    await Block.updateChain(dbTransaction, dbBlock, mainChainObj)
-                      .catch(error => {
-                        return Promise.reject(error);
-                      });
-                    await Address.updateForBlock(dbTransaction, dbBlock)
-                      .catch(error => {
-                        return Promise.reject(error);
-                      });
-                  }
-                  // Side chain chaos situation
-                  else {
-                    debug.log('Unknow chain detected: ' + chainObj.hash);
-                    await this.updateToUnknown(dbTransaction, chainObj)
-                      .catch(error => {
-                        return Promise.reject(error);
-                      });
-                    toRemove = false;
-                  }
-                }
-              }
-
-              // We only remove the chain that we fully migrated
-              if (toRemove === true) {
-                debug.log('Removing bad detected chain: ' + chainObj.hash);
-                await Chain.delete(dbTransaction, chainObj)
-                  .catch(error => {
-                    return Promise.reject(error);
-                  });
-              }
-            }
-          }
-        });
     });
   }
 }
 
-async function manageSideChain(dbTransaction: EntityManager, rpc: RPCClient, chainInfo: any, chainObj: mChain): Promise<any> {
+async function manageSideChain(dbTransaction: EntityManager, rpcClient: RPCClient, chainInfo: any, chainObj: mChain): Promise<any> {
   // Define current block hash
   let workingSideBlockHash = chainInfo.hash;
 
@@ -321,9 +350,9 @@ async function manageSideChain(dbTransaction: EntityManager, rpc: RPCClient, cha
 
     // Add the block for history (headers-only and invalid excluded)
     if (blockObj === undefined && (chainInfo.status === 'valid-fork' || chainInfo.status === 'valid-headers')) {
-      await rpc.getblock({ blockhash: workingSideBlockHash, verbosity: 2 })
+      await rpcClient.getblock({ blockhash: workingSideBlockHash, verbosity: 2 })
         .then(async rpcBlock => {
-          await Block.addFromHash(dbTransaction, rpc, workingSideBlockHash, chainObj);
+          await Block.addFromHash(dbTransaction, rpcClient, workingSideBlockHash, chainObj);
           return rpcBlock.previousblockhash
         })
         .then((previousblockhash: string) => {
@@ -342,7 +371,7 @@ async function manageSideChain(dbTransaction: EntityManager, rpc: RPCClient, cha
       }
 
       // Get the hash of the main chain block
-      const mainBlockHash = await rpc.getblockhash({ height: blockObj.height })
+      const mainBlockHash = await rpcClient.getblockhash({ height: blockObj.height })
         .catch(error => {
           return Promise.reject(error);
         });
@@ -353,83 +382,7 @@ async function manageSideChain(dbTransaction: EntityManager, rpc: RPCClient, cha
         await Chain.delete(dbTransaction, chainObj)
       }
 
-      // Try to find the main chain block hash on the database
-      const mainBlockObj = await dbTransaction.findOne(mBlock, {
-        where: { hash: mainBlockHash }
-      })
-        .catch(error => {
-          return Promise.reject(error);
-        });
-
-      // If we don't have the main chain block on the database
-      if (mainBlockObj === undefined) {
-
-        // Some log info
-        debug.log("Height : " + blockObj.height + " - Slide chain block detected (" + workingSideBlockHash + ")");
-        debug.log("Inserting block of main chain (" + mainBlockHash + ")");
-
-        await Chain.selectMain(dbTransaction)
-          .then(async (mainChainObj: mChain) => {
-            return await Block.addFromHash(dbTransaction, rpc, mainBlockHash, mainChainObj)
-          })
-          .catch(error => {
-            return Promise.reject(error);
-          });
-      }
-
-      // Change the "old" block to the the new side chain
-      await Block.updateChain(dbTransaction, blockObj, chainObj)
-        .catch(error => {
-          return Promise.reject(error);
-        });
-
-      // Update the addresses information
-      await Transaction.select(dbTransaction, workingSideBlockHash)
-        .then(async (transactions: mTransaction[]) => {
-          // Loop for each transaction
-          for (const transaction of transactions) {
-            if (transaction.vins !== undefined) {
-              // Loop for each VIN
-              for (const vin of transaction.vins) {
-                if (vin.coinbase === false && vin.vout !== undefined) {
-                  const addressDetails: AddressDetails = {
-                    type: UpdateType.SUBTRACTION,
-                    inputC: 0,
-                    inputT: new BigNumber(0),
-                    outputC: 1,
-                    outputT: new BigNumber(vin.vout.value)
-                  }
-                  await Address.update(dbTransaction, vin.vout.addresses![0], addressDetails)
-                    .catch(error => {
-                      return Promise.reject(error);
-                    });
-                }
-              }
-            }
-
-            if (transaction.vouts !== undefined) {
-              // Loop for each VOUT
-              for (const vout of transaction.vouts) {
-                const addressDetails: AddressDetails = {
-                  type: UpdateType.SUBTRACTION,
-                  inputC: 1,
-                  inputT: new BigNumber(vout.value),
-                  outputC: 0,
-                  outputT: new BigNumber(0)
-                }
-                if (vout.addresses !== undefined) {
-                  await Address.update(dbTransaction, vout.addresses[0], addressDetails)
-                    .catch(error => {
-                      return Promise.reject(error);
-                    });
-                }
-              }
-            }
-          }
-        })
-        .then(() => {
-          workingSideBlockHash = blockObj.previousblockhash;
-        })
+      await Block.resyncToMainChain(dbTransaction, rpcClient, blockObj.height, mainBlockHash, blockObj, chainObj)
         .catch(error => {
           return Promise.reject(error);
         });
