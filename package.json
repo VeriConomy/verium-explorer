@@ -1,6 +1,6 @@
 {
   "name": "gbc-explorer",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Global Blockchain Explorer RPC",
   "author": "Steve Calvário",
   "license": "GPL-3.0",
@@ -29,7 +29,7 @@
     "build": "lerna run build"
   },
   "devDependencies": {
-    "lerna": "^3.22.1",
-    "typescript": "^4.0.3"
+    "lerna": "^4.0.0",
+    "typescript": "^4.3.2"
   }
 }
