@@ -37,23 +37,23 @@ export class Address {
     };
 
     const newAddress = dbTransaction.create(mAddress, addressData);
-    return await dbTransaction.save(newAddress)
+    return dbTransaction.save(newAddress)
       .catch((error: any) => {
         return Promise.reject(error);
       });
   }
 
   static async update(dbTransaction: EntityManager, addressObj: mAddress, addressDetails: AddressDetails): Promise<UpdateResult> {
-    return await dbTransaction.update(mAddress, addressObj.id!, {
+    return dbTransaction.update(mAddress, addressObj.id!, {
       nTx: addressDetails.type === UpdateType.ADDITION ?
-        addressObj.nTx += 1 :
-        addressObj.nTx -= 1,
+        addressObj.nTx = addressObj.nTx + 1:
+        addressObj.nTx = addressObj.nTx - 1,
       inputC: addressDetails.type === UpdateType.ADDITION ?
-        addressObj.inputC += addressDetails.inputC :
-        addressObj.inputC -= addressDetails.inputC,
+        addressObj.inputC = addressObj.inputC + addressDetails.inputC:
+        addressObj.inputC = addressObj.inputC - addressDetails.inputC,
       outputC: addressDetails.type === UpdateType.ADDITION ?
-        addressObj.outputC += addressDetails.outputC :
-        addressObj.outputC -= addressDetails.outputC,
+        addressObj.outputC = addressObj.outputC + addressDetails.outputC:
+        addressObj.outputC = addressObj.outputC - addressDetails.outputC,
       balance: addressDetails.type === UpdateType.ADDITION ?
         (addressDetails.inputC === 1 ?
           new BigNumber(addressObj.balance).plus(addressDetails.inputT).toNumber() :
@@ -105,7 +105,7 @@ export class Address {
     }
   }
 
-  static async updateForBlock(dbTransaction: EntityManager, dbBlock: mBlock) {
+  static async updateForBlock(dbTransaction: EntityManager, dbBlock: mBlock, mainChain: boolean) {
     // Update the addresses information
     await Transaction.select(dbTransaction, dbBlock.hash)
       .then(async (transactions: mTransaction[]) => {
@@ -116,7 +116,7 @@ export class Address {
             for (const vin of transaction.vins) {
               if (vin.coinbase === false && vin.vout !== undefined) {
                 const addressDetails: AddressDetails = {
-                  type: UpdateType.ADDITION,
+                  type: mainChain === true ? UpdateType.ADDITION : UpdateType.SUBTRACTION,
                   inputC: 0,
                   inputT: new BigNumber(0),
                   outputC: 1,
@@ -134,7 +134,7 @@ export class Address {
             // Loop for each VOUT
             for (const vout of transaction.vouts) {
               const addressDetails: AddressDetails = {
-                type: UpdateType.ADDITION,
+                type: mainChain === true ? UpdateType.ADDITION : UpdateType.SUBTRACTION,
                 inputC: 1,
                 inputT: new BigNumber(vout.value),
                 outputC: 0,

@@ -101,7 +101,7 @@ const toRoot = '../../../';
   });
 
   // Check chain tips
-  const jobChainTips = new CronJob('25 * * * * *', async () => {
+  const jobChainTips = new CronJob('40 * * * * *', async () => {
     if (!isRunning) {
       isRunning = true;
       await Chain.sync(rpcClient)
