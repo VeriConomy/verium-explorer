@@ -246,10 +246,18 @@ export class Chain {
       if (removedChains.length >= 1) {
         // Loop on each chain
         for (const removedChain of removedChains) {
-          let toRemove = true;
-          if (removedChain.blocks !== undefined) {
+
+          // Get the list of blocks from the chain
+          const chainDbBlocks = await Block.selectAllOnChain(dbTransaction, removedChain)
+            .catch(error => {
+              return Promise.reject(error);
+            });
+
+          // In case we have blocks we need to handle them to remove the chain
+          if (chainDbBlocks !== undefined) {
+
             // Loop on each block of the chain
-            for (const dbBlock of removedChain.blocks) {
+            for (const dbBlock of chainDbBlocks) {
               const mainHash = await rpcClient.getblockhash({
                 height: dbBlock.height
               })
@@ -275,14 +283,11 @@ export class Chain {
             }
           }
 
-          // We only remove the chain that we fully migrated
-          if (toRemove === true) {
-            debug.log('Removing migrated chain: ' + removedChain.hash);
-            await Chain.delete(dbTransaction, removedChain)
-              .catch(error => {
-                return Promise.reject(error);
-              });
-          }
+          debug.log('Removing migrated chain: ' + removedChain.hash);
+          await Chain.delete(dbTransaction, removedChain)
+            .catch(error => {
+              return Promise.reject(error);
+            });
         }
 
         // Renewed get of all the chains in the DB
